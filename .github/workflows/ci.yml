@@ -1,0 +1,51 @@
+name: ci
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        default: "1"
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      m: ${{ steps.m.outputs.m }}
+    steps:
+      - id: m
+        env:
+          N: ${{ inputs.shards }}
+        run: |
+          [[ "$N" =~ ^[0-9]+$ ]] && (( N >= 1 && N <= 20 )) || exit 1
+          echo "m=[$(seq -s, 1 "$N")]" >> "$GITHUB_OUTPUT"
+  run:
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prep.outputs.m) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: run
+        env:
+          K: ${{ secrets.VAULT_KEY }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ inputs.shards }}
+        run: |
+          mkdir -p w out
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in payload.enc -pass env:K | tar -xz -C w
+          set +e
+          (cd w && OUT="$GITHUB_WORKSPACE/out" bash task.sh) > out/log.txt 2>&1
+          echo $? > out/exit
+          set -e
+          tar -czf - -C out . | openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -pass env:K -out r.enc
+          exit "$(cat out/exit)"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r-${{ matrix.shard }}
+          path: r.enc
+          retention-days: 3
